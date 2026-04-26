@@ -1,0 +1,13 @@
+{
+  "name": "cipher-relay",
+  "version": "1.0.0",
+  "description": "Blind WebSocket relay",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "uuid": "^9.0.0"
+  }
+}
