@@ -1,0 +1,73 @@
+const WebSocket = require('ws');
+const { v4: uuidv4 } = require('uuid');
+
+const PORT = process.env.PORT || 8080;
+const rooms = new Map();
+const clients = new WeakMap();
+const wss = new WebSocket.Server({ port: PORT });
+
+console.log(`[CIPHER RELAY] Running on port ${PORT}`);
+
+wss.on('connection', (ws) => {
+  const clientId = uuidv4();
+
+  ws.on('message', (raw) => {
+    let msg;
+    try { msg = JSON.parse(raw); }
+    catch { ws.send(JSON.stringify({ type: 'error', message: 'Invalid JSON' })); return; }
+
+    switch (msg.type) {
+      case 'join': {
+        const { roomId, publicKey, nickname } = msg;
+        if (!roomId || !publicKey) return;
+        clients.set(ws, { clientId, roomId, publicKey, nickname: nickname || 'Anonymous' });
+        if (!rooms.has(roomId)) rooms.set(roomId, new Map());
+        rooms.get(roomId).set(clientId, ws);
+        ws.send(JSON.stringify({ type: 'joined', clientId, roomId }));
+        broadcast(roomId, clientId, { type: 'peer_joined', clientId, publicKey, nickname: nickname || 'Anonymous' });
+        const peers = [];
+        rooms.get(roomId).forEach((peerWs, peerId) => {
+          if (peerId !== clientId) {
+            const p = clients.get(peerWs);
+            if (p) peers.push({ clientId: peerId, publicKey: p.publicKey, nickname: p.nickname });
+          }
+        });
+        ws.send(JSON.stringify({ type: 'peer_list', peers }));
+        break;
+      }
+      case 'message': {
+        const info = clients.get(ws);
+        if (!info) return;
+        broadcast(info.roomId, info.clientId, { type: 'message', from: info.clientId, nickname: info.nickname, payload: msg.payload, timestamp: Date.now() });
+        break;
+      }
+      case 'dm': {
+        const info = clients.get(ws);
+        if (!info) return;
+        const targetWs = rooms.get(info.roomId)?.get(msg.to);
+        if (targetWs?.readyState === WebSocket.OPEN) {
+          targetWs.send(JSON.stringify({ type: 'dm', from: info.clientId, nickname: info.nickname, payload: msg.payload, timestamp: Date.now() }));
+        }
+        break;
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    const info = clients.get(ws);
+    if (info) {
+      rooms.get(info.roomId)?.delete(info.clientId);
+      if (rooms.get(info.roomId)?.size === 0) rooms.delete(info.roomId);
+      broadcast(info.roomId, info.clientId, { type: 'peer_left', clientId: info.clientId });
+    }
+  });
+});
+
+function broadcast(roomId, excludeClientId, data) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  const json = JSON.stringify(data);
+  room.forEach((peerWs, peerId) => {
+    if (peerId !== excludeClientId && peerWs.readyState === WebSocket.OPEN) peerWs.send(json);
+  });
+}
